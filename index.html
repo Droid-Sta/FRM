@@ -115,7 +115,7 @@
                 <div class="result-label">S (Original part number)</div>
                 <div class="result-value" id="sNr"></div>
             </div>
-            <button class="download-btn" id="downloadBtn" style="display: none;">Скачать EEPROM (.bin)</button>
+            <button class="download-btn" id="downloadBtn" style="display: none;">Скачать EEPROM</button>
             <a class="download-link" id="downloadLink">Скачать вручную (если кнопка не работает)</a>
         </div>
         <div class="info">Загрузите бинарный файл D-Flash размером 32 КБ (128 блоков × 256 байт)</div>
@@ -132,8 +132,8 @@
         const corruptWarning = document.getElementById('corruptWarning');
         const downloadBtn = document.getElementById('downloadBtn');
         const downloadLink = document.getElementById('downloadLink');
-        let eepromData = null; // Uint16Array
-        let currentBlobUrl = null;
+        let eepromData = null;
+        let eepromFile = null; // File объект для скачивания
 
         fileInput.addEventListener('change', () => {
             convertBtn.disabled = !fileInput.files.length;
@@ -152,21 +152,31 @@
                     converter.findEndblock();
                     eepromData = converter.buildEeprom();
                     displayInfo(converter);
-                    convertBtn.disabled = true;
-                    resultDiv.style.display = 'block';
-                    downloadBtn.style.display = 'block';
-                    downloadLink.style.display = 'block';
-                    // Создаём Blob и ссылку для скачивания/шаринга
+
+                    // Формируем байты для файла
                     const bytes = new Uint8Array(eepromData.length * 2);
                     const view = new DataView(bytes.buffer);
                     for (let i = 0; i < eepromData.length; i++) {
                         view.setUint16(i * 2, eepromData[i], false);
                     }
+
+                    // Создаём Blob и File с именем
                     const blob = new Blob([bytes], { type: 'application/octet-stream' });
-                    if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
-                    currentBlobUrl = URL.createObjectURL(blob);
-                    downloadLink.href = currentBlobUrl;
-                    downloadLink.download = 'eeprom.bin';
+                    const dateStr = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+                    const fileName = `${dateStr}_eeprom.bin`;
+                    eepromFile = new File([blob], fileName, { type: 'application/octet-stream' });
+
+                    // Показываем результат
+                    convertBtn.disabled = true;
+                    resultDiv.style.display = 'block';
+                    downloadBtn.style.display = 'block';
+                    downloadLink.style.display = 'block';
+
+                    // Настраиваем ссылку
+                    const blobUrl = URL.createObjectURL(blob);
+                    downloadLink.href = blobUrl;
+                    downloadLink.download = fileName;
+
                     try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                 } catch (err) {
                     alert('Ошибка: ' + err.message);
@@ -176,25 +186,26 @@
         });
 
         downloadBtn.addEventListener('click', () => {
-            if (!currentBlobUrl) return;
+            if (!eepromFile) return;
 
-            // Пытаемся использовать Web Share API (для iOS 15+)
-            if (navigator.canShare && navigator.canShare({ files: [new File([blob], 'eeprom.bin', { type: 'application/octet-stream' })] })) {
-                const file = new File([blob], 'eeprom.bin', { type: 'application/octet-stream' });
+            // Пытаемся использовать Web Share API (iOS 15+)
+            if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
                 navigator.share({
-                    files: [file],
+                    files: [eepromFile],
                     title: 'EEPROM файл',
                     text: 'Восстановленный EEPROM для FRM3'
                 }).then(() => {
                     console.log('Файл отправлен через Share');
                 }).catch((err) => {
                     console.log('Share отменён или ошибка:', err);
-                    // Fallback: открываем Blob URL в новой вкладке
-                    window.open(currentBlobUrl, '_blank');
+                    // Fallback: открываем Blob URL
+                    const url = URL.createObjectURL(eepromFile);
+                    window.open(url, '_blank');
                 });
             } else {
-                // Fallback: открываем Blob URL в новой вкладке
-                window.open(currentBlobUrl, '_blank');
+                // Fallback: открываем Blob URL
+                const url = URL.createObjectURL(eepromFile);
+                window.open(url, '_blank');
             }
             try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
         });
@@ -202,7 +213,8 @@
         // Ссылка для ручного скачивания
         downloadLink.addEventListener('click', (e) => {
             e.preventDefault();
-            window.open(currentBlobUrl, '_blank');
+            const url = URL.createObjectURL(eepromFile);
+            window.open(url, '_blank');
         });
 
         function displayInfo(converter) {
@@ -219,6 +231,7 @@
             }
         }
 
+        // ================== Класс DFlashConverter ==================
         class DFlashConverter {
             constructor() {
                 this.NB_BLOCKS = 128;
@@ -238,7 +251,7 @@
                 this.endblock = null;
                 this.corrupt = false;
                 this.data = null;
-                this.cmds_per_block = (this.BLOCKSIZE - this.HEADERSIZE) / this.CMDSIZE; // 63
+                this.cmds_per_block = (this.BLOCKSIZE - this.HEADERSIZE) / this.CMDSIZE;
             }
 
             readFile(arrayBuffer) {
