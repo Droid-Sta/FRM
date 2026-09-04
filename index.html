@@ -113,7 +113,8 @@
 
     <script>
         const tg = window.Telegram.WebApp;
-        tg.ready(); tg.expand();
+        tg.ready();
+        tg.expand();
 
         const fileInput = document.getElementById('fileInput');
         const convertBtn = document.getElementById('convertBtn');
@@ -142,8 +143,8 @@
                     convertBtn.disabled = true;
                     resultDiv.style.display = 'block';
                     downloadBtn.style.display = 'block';
-                    // исправлено: правильный стиль haptic
-                    tg.HapticFeedback.impactOccurred('medium');
+                    // Безопасный вызов haptic
+                    try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                 } catch (err) {
                     alert('Ошибка: ' + err.message);
                 }
@@ -182,15 +183,12 @@
             document.body.removeChild(a);
 
             // Запасной вариант для мобильных устройств
-            // Если файл не скачался автоматически, откроем его в новой вкладке
             setTimeout(() => {
-                // Попробуем открыть в новой вкладке (пользователь сможет сохранить вручную)
-                // только если предыдущий метод не сработал (сложно проверить, поэтому просто показываем подсказку)
-                alert('Если файл не скачался автоматически, откройте его в новой вкладке, нажав "Открыть" в следующем диалоге.');
+                alert('Если файл не скачался автоматически, откройте его в новой вкладке.');
                 window.open(dataUri, '_blank');
             }, 300);
 
-            tg.HapticFeedback.impactOccurred('medium');
+            try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
         });
 
         function displayInfo(converter) {
@@ -207,9 +205,250 @@
             }
         }
 
-        // Класс DFlashConverter без изменений (см. предыдущий полный код)
         class DFlashConverter {
-            // ... (весь код класса идентичен предыдущему, для экономии места здесь опущен)
+            constructor() {
+                this.NB_BLOCKS = 128;
+                this.BLOCKSIZE = 256;
+                this.HEADERSIZE = 4;
+                this.CMDSIZE = 4;
+                this.EESIZE = 2048;
+                this.BLOCK_VALID = 0xFACF;
+                this.BLOCK_EMPTY = 0xFFFF;
+                this.CMD_MASK = 0xF800;
+                this.CMD_VALID = 0xB800;
+                this.CMD_EMPTY = 0xF800;
+                this.ADDR_MASK = 0x07FF; // ~CMD_MASK
+
+                this.block_types = [];
+                this.block_data = [];
+                this.endblock = null;
+                this.corrupt = false;
+                this.data = null;
+                this.cmds_per_block = (this.BLOCKSIZE - this.HEADERSIZE) / this.CMDSIZE; // 63
+            }
+
+            readFile(arrayBuffer) {
+                this.corrupt = false;
+                if (arrayBuffer.byteLength < this.NB_BLOCKS * this.BLOCKSIZE) {
+                    throw new Error('Файл слишком короткий. Ожидается минимум ' + (this.NB_BLOCKS * this.BLOCKSIZE) + ' байт.');
+                }
+                const view = new DataView(arrayBuffer);
+
+                this.block_data = Array.from({ length: this.NB_BLOCKS }, () => []);
+                this.block_types = [];
+
+                for (let blockid = 0; blockid < this.NB_BLOCKS; blockid++) {
+                    const offset = blockid * this.BLOCKSIZE;
+                    const header0 = view.getUint16(offset, false); // big-endian
+                    const header1 = view.getUint16(offset + 2, false);
+
+                    if (header0 === this.BLOCK_EMPTY) {
+                        if (header1 === this.BLOCK_EMPTY) {
+                            this.block_types.push('EMPTY');
+                        } else {
+                            this.block_types.push('NEW');
+                        }
+                    } else if (header0 === this.BLOCK_VALID) {
+                        this.block_types.push('VALID');
+                        for (let item = 0; item < this.cmds_per_block; item++) {
+                            const cmdOffset = offset + this.HEADERSIZE + item * this.CMDSIZE;
+                            const word0 = view.getUint16(cmdOffset, false);
+                            const word1 = view.getUint16(cmdOffset + 2, false);
+
+                            const cmd = word0 & this.CMD_MASK;
+                            const addr = word0 & this.ADDR_MASK;
+                            const data = word1;
+
+                            if (cmd === this.CMD_VALID) {
+                                this.block_data[blockid].push({ addr, data });
+                            } else if (cmd === this.CMD_EMPTY) {
+                                this.block_types[this.block_types.length - 1] = 'LAST';
+                            } else {
+                                console.error('Неизвестная команда: 0x' + cmd.toString(16));
+                                this.corrupt = true;
+                            }
+                        }
+                    } else {
+                        console.error('Неизвестный тип блока: 0x' + header0.toString(16));
+                        this.corrupt = true;
+                        this.block_types.push('INVALID');
+                    }
+                }
+            }
+
+            findNewBlocks() {
+                const blockTypes = [...this.block_types];
+                let currBlock = 0;
+                while (currBlock < this.NB_BLOCKS && (blockTypes[currBlock] === 'NEW' || blockTypes[currBlock] === 'EMPTY')) {
+                    blockTypes.push(blockTypes[currBlock]);
+                    currBlock++;
+                    if (currBlock > this.NB_BLOCKS) {
+                        throw new Error('Все блоки являются новыми');
+                    }
+                }
+
+                let newblock = null;
+                let ended = false;
+                for (let i = currBlock; i < blockTypes.length; i++) {
+                    if (blockTypes[i] === 'NEW') {
+                        if (newblock === null) {
+                            newblock = i;
+                        } else if (ended) {
+                            console.warn('Найдено более одного набора новых блоков!');
+                            return null;
+                        }
+                    } else if (blockTypes[i] !== 'EMPTY' && newblock !== null) {
+                        ended = true;
+                    }
+                }
+                if (newblock === null) {
+                    console.warn('Новые блоки не найдены!');
+                    return null;
+                }
+                return (newblock - 1 + this.NB_BLOCKS) % this.NB_BLOCKS;
+            }
+
+            findLastBlock() {
+                const count = this.block_types.filter(t => t === 'LAST').length;
+                if (count === 1) {
+                    return this.block_types.indexOf('LAST');
+                }
+                if (count === 0) {
+                    console.warn('Последний блок не найден!');
+                    return null;
+                }
+                console.warn('Найдено более одного "последнего" блока!');
+                return null;
+            }
+
+            findLongestEmpty() {
+                let now = 0;
+                let longest = 0;
+                let longestBlock = null;
+                const doubled = [...this.block_types, ...this.block_types];
+                for (let i = 0; i < doubled.length; i++) {
+                    if (doubled[i] === 'EMPTY' || doubled[i] === 'NEW') {
+                        now++;
+                    } else {
+                        now = 0;
+                    }
+                    if (now > longest) {
+                        longest = now;
+                        longestBlock = i;
+                    }
+                }
+                if (longestBlock === null) {
+                    return this.NB_BLOCKS - 1;
+                }
+                return (longestBlock - longest + this.NB_BLOCKS) % this.NB_BLOCKS;
+            }
+
+            findEndblock() {
+                const endblockNew = this.findNewBlocks();
+                const endblockLast = this.findLastBlock();
+
+                if (endblockNew === null) {
+                    if (endblockLast === null) {
+                        console.warn('Нет ни новых, ни последних блоков, используется самая длинная цепочка пустых блоков.');
+                        this.endblock = this.findLongestEmpty();
+                    } else {
+                        this.endblock = endblockLast;
+                    }
+                } else {
+                    if (endblockLast !== null && endblockLast !== endblockNew) {
+                        const blockTypes = [...this.block_types, ...this.block_types];
+                        let endblockNewWrapped = endblockNew;
+                        if (endblockNewWrapped < endblockLast) {
+                            endblockNewWrapped += this.NB_BLOCKS;
+                        }
+                        const slice = blockTypes.slice(endblockLast + 1, endblockNewWrapped + 1);
+                        const emptyCount = slice.filter(t => t === 'EMPTY').length;
+                        if (emptyCount !== endblockNewWrapped - endblockLast) {
+                            console.warn('Несоответствие: последний используемый блок не следует за новыми блоками!');
+                            console.warn('Используются новые блоки в качестве ориентира.');
+                        }
+                    }
+                    this.endblock = endblockNew;
+                }
+            }
+
+            buildEeprom() {
+                const startblock = (this.endblock + 1) % this.NB_BLOCKS;
+                const data = new Uint16Array(this.EESIZE);
+                data.fill(0xFFFF);
+
+                let block = startblock;
+                for (let count = 0; count < this.NB_BLOCKS; count++) {
+                    const commands = this.block_data[block];
+                    for (const cmd of commands) {
+                        data[cmd.addr] = cmd.data;
+                    }
+                    block = (block + 1) % this.NB_BLOCKS;
+                }
+
+                this.data = data;
+                return data;
+            }
+
+            getByte(addr) {
+                if (addr % 2 === 1) {
+                    return this.data[Math.floor(addr / 2)] & 0xFF;
+                }
+                return this.data[Math.floor(addr / 2)] >> 8;
+            }
+
+            getInfo() {
+                let vin = '';
+                for (let addr = 0xFD3; addr < 0xFE4; addr++) {
+                    vin += String.fromCharCode(this.getByte(addr));
+                }
+
+                const prodDay = this.getByte(0xFBE).toString(16).padStart(2, '0');
+                const prodMonth = this.getByte(0xFBD).toString(16).padStart(2, '0');
+                const prodYear = this.getByte(0xFBB).toString(16).padStart(2, '0') +
+                                 this.getByte(0xFBC).toString(16).padStart(2, '0');
+                const prodDate = `${prodDay}.${prodMonth}.${prodYear}`;
+
+                const progDay = this.getByte(0xF89).toString(16).padStart(2, '0');
+                const progMonth = this.getByte(0xF88).toString(16).padStart(2, '0');
+                const progYear = this.getByte(0xF86).toString(16).padStart(2, '0') +
+                                 this.getByte(0xF87).toString(16).padStart(2, '0');
+                const progDate = `${progDay}.${progMonth}.${progYear}`;
+
+                let hwNr = 0;
+                for (let addr = 0xF97; addr < 0xF9D; addr++) {
+                    hwNr = (hwNr << 8) + this.getByte(addr);
+                }
+                const hwNrStr = hwNr.toString(16).padStart(7, '0');
+
+                let swNr = 0;
+                for (let addr = 0xF8A; addr < 0xF90; addr++) {
+                    swNr = (swNr << 8) + this.getByte(addr);
+                }
+                const swNrStr = swNr.toString(16).padStart(7, '0');
+
+                let zbNr = 0;
+                for (let addr = 0xF65; addr < 0xF6B; addr++) {
+                    zbNr = (zbNr << 8) + this.getByte(addr);
+                }
+                const zbNrStr = zbNr.toString(16).padStart(7, '0');
+
+                let sNr = 0;
+                for (let addr = 0xFBF; addr < 0xFC5; addr++) {
+                    sNr = (sNr << 8) + this.getByte(addr);
+                }
+                const sNrStr = sNr.toString(16).padStart(7, '0');
+
+                return {
+                    vin,
+                    prodDate,
+                    progDate,
+                    hwNr: hwNrStr,
+                    swNr: swNrStr,
+                    zbNr: zbNrStr,
+                    sNr: sNrStr
+                };
+            }
         }
     </script>
 </body>
