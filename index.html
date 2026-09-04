@@ -123,6 +123,7 @@
         const downloadBtn = document.getElementById('downloadBtn');
         let eepromData = null;
         let eepromFile = null;
+        let eepromBytes = null; // Для data URI
 
         fileInput.addEventListener('change', () => {
             convertBtn.disabled = !fileInput.files.length;
@@ -148,6 +149,7 @@
                     for (let i = 0; i < eepromData.length; i++) {
                         view.setUint16(i * 2, eepromData[i], false);
                     }
+                    eepromBytes = bytes; // Сохраняем для data URI
 
                     // Создаём Blob и File с именем
                     const blob = new Blob([bytes], { type: 'application/octet-stream' });
@@ -168,6 +170,15 @@
             reader.readAsArrayBuffer(file);
         });
 
+        // Функция для преобразования Uint8Array в base64
+        function bytesToBase64(bytes) {
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
         downloadBtn.addEventListener('click', async () => {
             if (!eepromFile) return;
 
@@ -176,23 +187,36 @@
                 if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
                     await navigator.share({ files: [eepromFile] });
                     // Успешно передано через share sheet
+                    try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                     return;
                 }
             } catch (err) {
                 console.log('Share отклонён или не поддерживается, переходим к скачиванию');
             }
 
-            // Стандартное скачивание через <a download>
-            const url = URL.createObjectURL(eepromFile);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = eepromFile.name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-            try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
+            // Резервный вариант: скачивание через data URI (надёжнее для Android)
+            if (eepromBytes) {
+                const base64 = bytesToBase64(eepromBytes);
+                const dataUrl = 'data:application/octet-stream;base64,' + base64;
+                const a = document.createElement('a');
+                a.href = dataUrl;
+                a.download = eepromFile.name;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
+            } else {
+                // Если bytes недоступны, используем blob URL (запасной путь)
+                const url = URL.createObjectURL(eepromFile);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = eepromFile.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
         });
 
         function displayInfo(converter) {
