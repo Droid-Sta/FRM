@@ -64,6 +64,15 @@
         }
         .download-btn:hover { box-shadow: 0 5px 15px rgba(39,174,96,0.4); }
         .info { margin-top: 15px; font-size: 0.8rem; opacity: 0.7; text-align: center; }
+        a.download-link {
+            display: none;
+            margin-top: 10px;
+            color: #4a90e2;
+            text-align: center;
+            text-decoration: underline;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -107,6 +116,7 @@
                 <div class="result-value" id="sNr"></div>
             </div>
             <button class="download-btn" id="downloadBtn" style="display: none;">Скачать EEPROM (.bin)</button>
+            <a class="download-link" id="downloadLink">Скачать вручную (если кнопка не работает)</a>
         </div>
         <div class="info">Загрузите бинарный файл D-Flash размером 32 КБ (128 блоков × 256 байт)</div>
     </div>
@@ -121,7 +131,9 @@
         const resultDiv = document.getElementById('result');
         const corruptWarning = document.getElementById('corruptWarning');
         const downloadBtn = document.getElementById('downloadBtn');
+        const downloadLink = document.getElementById('downloadLink');
         let eepromData = null; // Uint16Array
+        let currentBlobUrl = null;
 
         fileInput.addEventListener('change', () => {
             convertBtn.disabled = !fileInput.files.length;
@@ -143,7 +155,18 @@
                     convertBtn.disabled = true;
                     resultDiv.style.display = 'block';
                     downloadBtn.style.display = 'block';
-                    // Безопасный вызов haptic
+                    downloadLink.style.display = 'block';
+                    // Создаём Blob и ссылку для скачивания/шаринга
+                    const bytes = new Uint8Array(eepromData.length * 2);
+                    const view = new DataView(bytes.buffer);
+                    for (let i = 0; i < eepromData.length; i++) {
+                        view.setUint16(i * 2, eepromData[i], false);
+                    }
+                    const blob = new Blob([bytes], { type: 'application/octet-stream' });
+                    if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+                    currentBlobUrl = URL.createObjectURL(blob);
+                    downloadLink.href = currentBlobUrl;
+                    downloadLink.download = 'eeprom.bin';
                     try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                 } catch (err) {
                     alert('Ошибка: ' + err.message);
@@ -153,42 +176,33 @@
         });
 
         downloadBtn.addEventListener('click', () => {
-            if (!eepromData) {
-                alert('Нет данных для скачивания');
-                return;
+            if (!currentBlobUrl) return;
+
+            // Пытаемся использовать Web Share API (для iOS 15+)
+            if (navigator.canShare && navigator.canShare({ files: [new File([blob], 'eeprom.bin', { type: 'application/octet-stream' })] })) {
+                const file = new File([blob], 'eeprom.bin', { type: 'application/octet-stream' });
+                navigator.share({
+                    files: [file],
+                    title: 'EEPROM файл',
+                    text: 'Восстановленный EEPROM для FRM3'
+                }).then(() => {
+                    console.log('Файл отправлен через Share');
+                }).catch((err) => {
+                    console.log('Share отменён или ошибка:', err);
+                    // Fallback: открываем Blob URL в новой вкладке
+                    window.open(currentBlobUrl, '_blank');
+                });
+            } else {
+                // Fallback: открываем Blob URL в новой вкладке
+                window.open(currentBlobUrl, '_blank');
             }
-
-            // Преобразуем Uint16Array в байты (big-endian)
-            const bytes = new Uint8Array(eepromData.length * 2);
-            const view = new DataView(bytes.buffer);
-            for (let i = 0; i < eepromData.length; i++) {
-                view.setUint16(i * 2, eepromData[i], false); // big-endian
-            }
-
-            // Переводим в base64
-            let binary = '';
-            const chunkSize = 0x8000;
-            for (let i = 0; i < bytes.length; i += chunkSize) {
-                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-            }
-            const base64 = btoa(binary);
-            const dataUri = 'data:application/octet-stream;base64,' + base64;
-
-            // Создаём ссылку для скачивания
-            const a = document.createElement('a');
-            a.href = dataUri;
-            a.download = 'eeprom.bin';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-
-            // Запасной вариант для мобильных устройств
-            setTimeout(() => {
-                alert('Если файл не скачался автоматически, откройте его в новой вкладке.');
-                window.open(dataUri, '_blank');
-            }, 300);
-
             try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
+        });
+
+        // Ссылка для ручного скачивания
+        downloadLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.open(currentBlobUrl, '_blank');
         });
 
         function displayInfo(converter) {
@@ -217,7 +231,7 @@
                 this.CMD_MASK = 0xF800;
                 this.CMD_VALID = 0xB800;
                 this.CMD_EMPTY = 0xF800;
-                this.ADDR_MASK = 0x07FF; // ~CMD_MASK
+                this.ADDR_MASK = 0x07FF;
 
                 this.block_types = [];
                 this.block_data = [];
@@ -239,7 +253,7 @@
 
                 for (let blockid = 0; blockid < this.NB_BLOCKS; blockid++) {
                     const offset = blockid * this.BLOCKSIZE;
-                    const header0 = view.getUint16(offset, false); // big-endian
+                    const header0 = view.getUint16(offset, false);
                     const header1 = view.getUint16(offset + 2, false);
 
                     if (header0 === this.BLOCK_EMPTY) {
