@@ -168,26 +168,31 @@
             reader.readAsArrayBuffer(file);
         });
 
-        downloadBtn.addEventListener('click', () => {
+        downloadBtn.addEventListener('click', async () => {
             if (!eepromFile) return;
 
-            const handleDownload = async () => {
-                try {
-                    if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
-                        await navigator.share({ files: [eepromFile] });
-                        // Успешно: файл передан через share sheet, больше ничего не делаем
-                    } else {
-                        // Fallback: открываем Blob URL
-                        const url = URL.createObjectURL(eepromFile);
-                        window.open(url, '_blank');
-                    }
-                } catch (err) {
-                    // Пользователь отменил share или ошибка – ничего не делаем
-                    console.log('Share cancelled or error:', err);
+            try {
+                // Пытаемся использовать Web Share API (лучше всего работает на iOS)
+                if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
+                    await navigator.share({ files: [eepromFile] });
+                    // Успешно передано через share sheet
+                    return;
                 }
-                try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
-            };
-            handleDownload();
+            } catch (err) {
+                console.log('Share отклонён или не поддерживается, переходим к скачиванию');
+            }
+
+            // Стандартное скачивание через <a download>
+            const url = URL.createObjectURL(eepromFile);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = eepromFile.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
         });
 
         function displayInfo(converter) {
