@@ -64,15 +64,6 @@
         }
         .download-btn:hover { box-shadow: 0 5px 15px rgba(39,174,96,0.4); }
         .info { margin-top: 15px; font-size: 0.8rem; opacity: 0.7; text-align: center; }
-        a.download-link {
-            display: none;
-            margin-top: 10px;
-            color: #4a90e2;
-            text-align: center;
-            text-decoration: underline;
-            cursor: pointer;
-            font-size: 0.9rem;
-        }
     </style>
 </head>
 <body>
@@ -116,7 +107,6 @@
                 <div class="result-value" id="sNr"></div>
             </div>
             <button class="download-btn" id="downloadBtn" style="display: none;">Скачать EEPROM</button>
-            <a class="download-link" id="downloadLink">Скачать вручную (если кнопка не работает)</a>
         </div>
         <div class="info">Загрузите бинарный файл D-Flash размером 32 КБ (128 блоков × 256 байт)</div>
     </div>
@@ -131,9 +121,8 @@
         const resultDiv = document.getElementById('result');
         const corruptWarning = document.getElementById('corruptWarning');
         const downloadBtn = document.getElementById('downloadBtn');
-        const downloadLink = document.getElementById('downloadLink');
         let eepromData = null;
-        let eepromFile = null; // File объект для скачивания
+        let eepromFile = null;
 
         fileInput.addEventListener('change', () => {
             convertBtn.disabled = !fileInput.files.length;
@@ -170,12 +159,6 @@
                     convertBtn.disabled = true;
                     resultDiv.style.display = 'block';
                     downloadBtn.style.display = 'block';
-                    downloadLink.style.display = 'block';
-
-                    // Настраиваем ссылку
-                    const blobUrl = URL.createObjectURL(blob);
-                    downloadLink.href = blobUrl;
-                    downloadLink.download = fileName;
 
                     try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                 } catch (err) {
@@ -188,33 +171,23 @@
         downloadBtn.addEventListener('click', () => {
             if (!eepromFile) return;
 
-            // Пытаемся использовать Web Share API (iOS 15+)
-            if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
-                navigator.share({
-                    files: [eepromFile],
-                    title: 'EEPROM файл',
-                    text: 'Восстановленный EEPROM для FRM3'
-                }).then(() => {
-                    console.log('Файл отправлен через Share');
-                }).catch((err) => {
-                    console.log('Share отменён или ошибка:', err);
-                    // Fallback: открываем Blob URL
-                    const url = URL.createObjectURL(eepromFile);
-                    window.open(url, '_blank');
-                });
-            } else {
-                // Fallback: открываем Blob URL
-                const url = URL.createObjectURL(eepromFile);
-                window.open(url, '_blank');
-            }
-            try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
-        });
-
-        // Ссылка для ручного скачивания
-        downloadLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            const url = URL.createObjectURL(eepromFile);
-            window.open(url, '_blank');
+            const handleDownload = async () => {
+                try {
+                    if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
+                        await navigator.share({ files: [eepromFile] });
+                        // Успешно: файл передан через share sheet, больше ничего не делаем
+                    } else {
+                        // Fallback: открываем Blob URL
+                        const url = URL.createObjectURL(eepromFile);
+                        window.open(url, '_blank');
+                    }
+                } catch (err) {
+                    // Пользователь отменил share или ошибка – ничего не делаем
+                    console.log('Share cancelled or error:', err);
+                }
+                try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
+            };
+            handleDownload();
         });
 
         function displayInfo(converter) {
