@@ -69,7 +69,7 @@
 <body>
     <div class="container">
         <h1>🔧 FRM3 D-Flash Converter</h1>
-        <div class="subtitle">MC9S12XEQ384 EEPROM Emulation</div>
+        <div class="subtitle">MC9S12XEQ384 eeprom repair</div>
 
         <label for="fileInput">Загрузите дамп D-Flash (.bin, 32 КБ)</label>
         <input type="file" id="fileInput" accept=".bin,.BIN">
@@ -108,7 +108,7 @@
             </div>
             <button class="download-btn" id="downloadBtn" style="display: none;">Скачать EEPROM</button>
         </div>
-        <div class="info">Загрузите бинарный файл D-Flash размером 32 КБ (128 блоков × 256 байт)</div>
+        <div class="info">Загрузите бинарный файл D-Flash размером 32 КБ (❗️ Кнопка Скачать не работает на устройсвах Android )</div>
     </div>
 
     <script>
@@ -123,7 +123,6 @@
         const downloadBtn = document.getElementById('downloadBtn');
         let eepromData = null;
         let eepromFile = null;
-        let eepromBytes = null; // Для data URI
 
         fileInput.addEventListener('change', () => {
             convertBtn.disabled = !fileInput.files.length;
@@ -149,7 +148,6 @@
                     for (let i = 0; i < eepromData.length; i++) {
                         view.setUint16(i * 2, eepromData[i], false);
                     }
-                    eepromBytes = bytes; // Сохраняем для data URI
 
                     // Создаём Blob и File с именем
                     const blob = new Blob([bytes], { type: 'application/octet-stream' });
@@ -170,15 +168,6 @@
             reader.readAsArrayBuffer(file);
         });
 
-        // Функция для преобразования Uint8Array в base64
-        function bytesToBase64(bytes) {
-            let binary = '';
-            for (let i = 0; i < bytes.length; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            return btoa(binary);
-        }
-
         downloadBtn.addEventListener('click', async () => {
             if (!eepromFile) return;
 
@@ -187,36 +176,23 @@
                 if (navigator.canShare && navigator.canShare({ files: [eepromFile] })) {
                     await navigator.share({ files: [eepromFile] });
                     // Успешно передано через share sheet
-                    try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
                     return;
                 }
             } catch (err) {
                 console.log('Share отклонён или не поддерживается, переходим к скачиванию');
             }
 
-            // Резервный вариант: скачивание через data URI (надёжнее для Android)
-            if (eepromBytes) {
-                const base64 = bytesToBase64(eepromBytes);
-                const dataUrl = 'data:application/octet-stream;base64,' + base64;
-                const a = document.createElement('a');
-                a.href = dataUrl;
-                a.download = eepromFile.name;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
-            } else {
-                // Если bytes недоступны, используем blob URL (запасной путь)
-                const url = URL.createObjectURL(eepromFile);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = eepromFile.name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            }
+            // Стандартное скачивание через <a download>
+            const url = URL.createObjectURL(eepromFile);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = eepromFile.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            try { tg.HapticFeedback.impactOccurred('medium'); } catch(e) {}
         });
 
         function displayInfo(converter) {
